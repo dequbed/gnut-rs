@@ -1,0 +1,14 @@
+[package]
+name = "gnutbot"
+version = "0.1.0"
+authors = ["Gregor Reitzenstein <me@dequbed.space>"]
+edition = "2018"
+
+[dependencies]
+futures = "0.1"
+tokio = "0.1"
+tokio-xmpp = "1.0.0"
+xmpp-parsers = "0.12"
+
+[patch.crates-io]
+tokio-xmpp = { path = "../tokio-xmpp" }
