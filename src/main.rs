@@ -1,4 +1,4 @@
-use futures::{future, Future, Sink, Stream, Poll, Async, AsyncSink, StartSend, task};
+use futures::{future, Future, Sink, Stream, Poll, Async, AsyncSink, StartSend, task, IntoFuture};
 use std::mem;
 use std::env::args;
 use std::process::exit;
@@ -7,6 +7,8 @@ use tokio_xmpp::{Client, Packet, Event};
 use xmpp_parsers::{Jid, Element, TryFrom};
 use xmpp_parsers::message::{Body, Message, MessageType};
 use xmpp_parsers::presence::{Presence, Show as PresenceShow, Type as PresenceType};
+use xmpp_parsers::muc::MucUser;
+use xmpp_parsers::delay::Delay;
 
 use std::collections::HashMap;
 
@@ -50,8 +52,112 @@ fn main() {
 
             None
         } else if let Event::Stanza(s) = event.clone() {
-            if s.name() == "presence" && s.attr("from") == Some("botspam@chat.paranoidlabs.org") {
-                println!("{:?}", s);
+            if s.name() == "presence" {
+                let p = Presence::try_from(s);
+                println!("{:?}", p);
+                if let Ok(p) = p {
+                    if let Some(_) = p.from {
+                        for pl in p.payloads {
+                            if let Ok(mu) = MucUser::try_from(pl) {
+                                println!("{:?}", mu);
+                            }
+
+                            /*
+                             *Element {
+                             *    prefix: None,
+                             *    name: "x",
+                             *    namespaces:
+                             *        NamespaceSet {
+                             *            parent: RefCell {
+                             *                value: Some(NamespaceSet {
+                             *                    parent: RefCell { value: None }, 
+                             *                    namespaces: {None: "jabber:client"} 
+                             *                }) 
+                             *            },
+                             *            namespaces: {
+                             *                None: "http://jabber.org/protocol/muc#user"
+                             *            }
+                             *        },
+                             *    attributes: {},
+                             *    children: [
+                             *        Element(Element {
+                             *            prefix: None, 
+                             *            name: "item", 
+                             *            namespaces: NamespaceSet { 
+                             *                parent: RefCell {
+                             *                    value: Some(NamespaceSet { 
+                             *                        parent: RefCell { 
+                             *                            value: Some(NamespaceSet { 
+                             *                                parent: RefCell { value: None }, 
+                             *                                namespaces: {None: "jabber:client"} 
+                             *                            }) 
+                             *                        }, 
+                             *                        namespaces: { None: "http://jabber.org/protocol/muc#user"} 
+                             *                    }) 
+                             *                }, 
+                             *                namespaces: { None: "http://jabber.org/protocol/muc#user" } 
+                             *            }, 
+                             *            attributes: {
+                             *                "affiliation": "none", 
+                             *                "jid": "gnut@paranoidlabs.org/64916298471364904842953346", "role": "participant"
+                             *            },
+                             *            children: [] 
+                             *        }), 
+                             *        Element(Element { 
+                             *            prefix: None, 
+                             *            name: "status", 
+                             *            namespaces: NamespaceSet { 
+                             *                parent: RefCell { 
+                             *                    value: Some(NamespaceSet { 
+                             *                        parent: RefCell { 
+                             *                            value: Some(NamespaceSet { 
+                             *                                parent: RefCell { value: None }, 
+                             *                                namespaces: {None: "jabber:client"} 
+                             *                            }) 
+                             *                        }, 
+                             *                        namespaces: { None: "http://jabber.org/protocol/muc#user" } 
+                             *                    }) 
+                             *                }, 
+                             *                namespaces: { None: "http://jabber.org/protocol/muc#user" } 
+                             *            }, 
+                             *            attributes: {"code": "100"},
+                             *            children: []
+                             *        }), 
+                             *        Element(Element { 
+                             *            prefix: None, 
+                             *            name: "status", 
+                             *            namespaces: NamespaceSet {
+                             *                parent: RefCell { 
+                             *                    value: Some(NamespaceSet { 
+                             *                        parent: RefCell { 
+                             *                            value: Some(NamespaceSet { 
+                             *                                parent: RefCell { value: None }, 
+                             *                                namespaces: {None: "jabber:client"} 
+                             *                            }) 
+                             *                        }, 
+                             *                        namespaces: {None: "http://jabber.org/protocol/muc#user"}
+                             *                    }) 
+                             *                }, 
+                             *                namespaces: {None: "http://jabber.org/protocol/muc#user"} 
+                             *            },
+                             *            attributes: {"code": "110"}, 
+                             *            children: [] 
+                             *        })
+                             *    ]
+                             *}
+                             */
+
+                        }
+                    }
+                }
+            }
+            Some(event)
+        } else if let Some(message) = event.clone().into_stanza().and_then(|stanza| Message::try_from(stanza).ok()) {
+            for p in message.payloads {
+                if let Ok(d) = Delay::try_from(p) {
+                    println!("{:?}", d);
+                    return None
+                }
             }
             Some(event)
         } else {
@@ -147,14 +253,25 @@ impl Sink for Hello {
         match *self {
             Hello::Waiting => {
                 if let Some(message) = item.into_stanza().and_then(|stanza| Message::try_from(stanza).ok()) {
-                    match (message.from, message.bodies.get("")) {
-                        (Some(ref from), Some(ref body)) => {
-                            if body.0.starts_with("^hello") {
-                                *self = Hello::Greeting(from.clone());
-                                task::current().notify();
-                            }
-                        },
-                        _ => {}
+
+                    let mut delay = false;
+                    for p in message.payloads {
+                        println!("{:?}", p);
+                        if let Ok(d) = Delay::try_from(p) {
+                            println!("{:?}", d);
+                            delay = true;
+                        }
+                    }
+                    if !delay {
+                        match (message.from, message.bodies.get("")) {
+                            (Some(ref from), Some(ref body)) => {
+                                if body.0.starts_with("^hello") {
+                                    *self = Hello::Greeting(from.clone());
+                                    task::current().notify();
+                                }
+                            },
+                            _ => {}
+                        }
                     }
                 }
                 Ok(AsyncSink::Ready)
@@ -211,20 +328,29 @@ impl Sink for Echo {
         match *self {
             Echo::Empty => {
                 if let Some(message) = item.into_stanza().and_then(|stanza| Message::try_from(stanza).ok()) {
-                    match (message.from, message.bodies.get("")) {
-                        (Some(ref from), Some(ref body)) => {
-                            if body.0.starts_with("^echo") {
-                                if body.0.len() < 7 {
-                                    *self = Echo::Storing(from.clone(), "You need to tell me what to echo.".into());
-                                } else {
-                                    println!("I got a message {} from {}", body.0, from);
-                                    *self = Echo::Storing(from.clone(), (body.0)[6..].to_owned());
+                    let mut delay = false;
+                    for p in message.payloads {
+                        println!("{:?}", p);
+                        if let Ok(d) = Delay::try_from(p) {
+                            println!("{:?}", d);
+                            delay = true;
+                        }
+                    }
+                    if !delay {
+                        match (message.from, message.bodies.get("")) {
+                            (Some(ref from), Some(ref body)) => {
+                                if body.0.starts_with("^echo") {
+                                    if body.0.len() < 7 {
+                                        *self = Echo::Storing(from.clone(), "You need to tell me what to echo.".into());
+                                    } else {
+                                        *self = Echo::Storing(from.clone(), (body.0)[6..].to_owned());
+                                    }
+                                    task::current().notify();
+                                    return Ok(AsyncSink::Ready)
                                 }
-                                task::current().notify();
-                                return Ok(AsyncSink::Ready)
-                            }
-                        },
-                        _ => {}
+                            },
+                            _ => {}
+                        }
                     }
                 }
                 Ok(AsyncSink::Ready)
@@ -315,6 +441,65 @@ impl Sink for Join {
     }
 }
 impl Stream for Join {
+    type Item = Element;
+    type Error = ();
+
+    fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
+        match mem::replace(self, Join::Waiting) {
+            Join::Joining(j) => {
+                let mut presence = Presence::new(PresenceType::None);
+                presence.show = PresenceShow::None;
+                presence.to = Some(j);
+                Ok(Async::Ready(Some(presence.into())))
+            },
+            Join::Waiting => Ok(Async::NotReady)
+        }
+    }
+}
+
+struct SimpleModule<T> {
+    inner: Option<T>,
+    recv: Box<FnMut(Event) -> Future<Item = Option<T>, Error = ()>>,
+    send: Box<FnMut(T) -> Future<Item = Element, Error = ()>>,
+}
+impl<T> SimpleModule<T> {
+    pub fn new(recv: Box<FnMut(Event) -> Future<Item = Option<T>, Error = ()>>, send: Box<FnMut(T) -> Future<Item = Element, Error = ()>>) -> Self {
+        Self {
+            inner: None,
+            recv,
+            send,
+        }
+    }
+}
+
+impl<T> Module<()> for SimpleModule<T> { }
+impl<T> Sink for SimpleModule<T> {
+    type SinkItem = Event;
+    type SinkError = ();
+
+    fn start_send(&mut self, item: Self::SinkItem) -> StartSend<Self::SinkItem, Self::SinkError> {
+        match self.inner {
+            None => {
+                match (self.recv)(item) {
+
+                }
+                Ok(AsyncSink::Ready)
+            },
+            Some(_) => Ok(AsyncSink::NotReady(item))
+        }
+    }
+
+    fn poll_complete(&mut self) -> Poll<(), Self::SinkError> {
+        match *self {
+            Join::Waiting => Ok(Async::Ready(())),
+            Join::Joining(_) => {
+                task::current().notify();
+                Ok(Async::NotReady)
+            }
+        }
+    }
+}
+impl<T> Stream for SimpleModule<T> {
     type Item = Element;
     type Error = ();
 
