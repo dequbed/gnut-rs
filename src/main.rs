@@ -1,11 +1,11 @@
-use futures::{future, Future, Sink, Stream, Poll, Async, AsyncSink, StartSend, task, IntoFuture};
+use futures::{Future, Sink, Stream, Poll, Async, AsyncSink, StartSend, task};
 use std::mem;
 use std::env::args;
 use std::process::exit;
 use tokio::runtime::current_thread::Runtime;
 use tokio_xmpp::{Client, Packet, Event};
 use xmpp_parsers::{Jid, Element, TryFrom};
-use xmpp_parsers::message::{Body, Message, MessageType};
+use xmpp_parsers::message::{Body, Message};
 use xmpp_parsers::presence::{Presence, Show as PresenceShow, Type as PresenceType};
 use xmpp_parsers::muc::MucUser;
 use xmpp_parsers::delay::Delay;
@@ -51,7 +51,7 @@ fn main() {
             tx.start_send(Packet::Stanza(presence)).unwrap();
 
             None
-        } else if let Event::Stanza(s) = event.clone() {
+        } else if let Event::Stanza(s) = event {
             if s.name() == "presence" {
                 let p = Presence::try_from(s);
                 println!("{:?}", p);
@@ -152,7 +152,7 @@ fn main() {
                 }
             }
             Some(event)
-        } else if let Some(message) = event.clone().into_stanza().and_then(|stanza| Message::try_from(stanza).ok()) {
+        } else if let Some(message) = event.into_stanza().and_then(|stanza| Message::try_from(stanza).ok()) {
             for p in message.payloads {
                 if let Ok(d) = Delay::try_from(p) {
                     println!("{:?}", d);
@@ -457,15 +457,20 @@ impl Stream for Join {
     }
 }
 
+enum State<T> {
+    Waiting,
+    Receiving(Box<Future<Item = Option<T>, Error = ()>>),
+    Sending(Box<Future<Item = Element, Error = ()>>),
+}
 struct SimpleModule<T> {
-    inner: Option<T>,
+    inner: State<T>,
     recv: Box<FnMut(Event) -> Future<Item = Option<T>, Error = ()>>,
     send: Box<FnMut(T) -> Future<Item = Element, Error = ()>>,
 }
 impl<T> SimpleModule<T> {
     pub fn new(recv: Box<FnMut(Event) -> Future<Item = Option<T>, Error = ()>>, send: Box<FnMut(T) -> Future<Item = Element, Error = ()>>) -> Self {
         Self {
-            inner: None,
+            inner: State::Waiting,
             recv,
             send,
         }
@@ -479,20 +484,19 @@ impl<T> Sink for SimpleModule<T> {
 
     fn start_send(&mut self, item: Self::SinkItem) -> StartSend<Self::SinkItem, Self::SinkError> {
         match self.inner {
-            None => {
-                match (self.recv)(item) {
-
-                }
+            State::Waiting => {
+                let f = Box::new((self.recv)(item));
+                self.inner = State::Receiving(f);
                 Ok(AsyncSink::Ready)
             },
-            Some(_) => Ok(AsyncSink::NotReady(item))
+            _ => Ok(AsyncSink::NotReady(item))
         }
     }
 
     fn poll_complete(&mut self) -> Poll<(), Self::SinkError> {
-        match *self {
-            Join::Waiting => Ok(Async::Ready(())),
-            Join::Joining(_) => {
+        match self.inner {
+            State::Waiting => Ok(Async::Ready(())),
+            _ => {
                 task::current().notify();
                 Ok(Async::NotReady)
             }
@@ -504,14 +508,6 @@ impl<T> Stream for SimpleModule<T> {
     type Error = ();
 
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
-        match mem::replace(self, Join::Waiting) {
-            Join::Joining(j) => {
-                let mut presence = Presence::new(PresenceType::None);
-                presence.show = PresenceShow::None;
-                presence.to = Some(j);
-                Ok(Async::Ready(Some(presence.into())))
-            },
-            Join::Waiting => Ok(Async::NotReady)
-        }
+        Ok(Async::NotReady)
     }
 }
