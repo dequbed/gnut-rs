@@ -3,6 +3,7 @@ extern crate futures;
 
 use futures::{future, Future, Sink, Stream, Poll, Async, AsyncSink, StartSend, task};
 use futures::future::FutureResult;
+use futures::unsync::mpsc;
 use std::mem;
 use std::env::args;
 use std::process::exit;
@@ -15,6 +16,8 @@ use xmpp_parsers::muc::MucUser;
 use xmpp_parsers::delay::Delay;
 
 use std::collections::HashMap;
+
+mod command;
 
 fn main() {
     let args: Vec<String> = args().collect();
@@ -186,6 +189,8 @@ struct Channel {
 trait Module<T>: Sink<SinkItem = Event, SinkError = ()> + Stream<Item = Element, Error = ()> {
 }
 
+impl<S: Sink<SinkItem = Event, SinkError = ()> + Stream<Item = Element, Error = ()>> Module<()> for S { }
+
 struct ModuleHandler {
     sink: Box<Sink<SinkItem = Event, SinkError = ()>>,
     stream: Box<Stream<Item = Element, Error = ()>>,
@@ -195,21 +200,49 @@ impl ModuleHandler {
         let (esink, estream) = Echo::new().split();
         let (hsink, hstream) = Hello::new().split();
         let (jsink, jstream) = Join::new().split();
+
+        let (tsink, tstream) = SimpleModule::new(Box::new(|event| {
+            if let Some(message) = event.into_stanza().and_then(|stanza| Message::try_from(stanza).ok()) {
+                    let mut delay = false;
+                    for p in message.payloads {
+                        println!("{:?}", p);
+                        if let Ok(d) = Delay::try_from(p) {
+                            println!("{:?}", d);
+                            delay = true;
+                        }
+                    }
+                    if !delay {
+                        match (message.from, message.bodies.get("")) {
+                            (Some(ref from), Some(ref body)) => {
+                                if body.0.starts_with("^hai") {
+                                    let mut message = Message::new(Some(from.clone()));
+                                    message.bodies.insert(String::new(), Body("Haai >^.^<".into()));
+                                    return future::ok(Some(message.into()));
+                                }
+                            },
+                            _ => {}
+                        }
+                    }
+            }
+
+            future::ok(None)
+        }), Box::new(|element| { future::ok(element) })).split();
+
         ModuleHandler {
             sink: Box::new(esink
                    .fanout(hsink)
                    .fanout(jsink)
+                   //.fanout(tsink)
             ),
             stream: Box::new(estream
                      .select(hstream)
                      .select(jstream)
+                     //.select(tstream)
             ),
         }
     }
 }
 
-impl Module<()> for ModuleHandler {
-}
 impl Sink for ModuleHandler {
     type SinkItem = Event;
     type SinkError = ();
@@ -239,8 +272,6 @@ impl Hello {
         Hello::Waiting
     }
 }
-impl Module<()> for Hello { }
-
 impl Sink for Hello {
     type SinkItem = Event;
     type SinkError = ();
@@ -313,8 +344,6 @@ impl Echo {
         Echo::Empty
     }
 }
-
-impl Module<()> for Echo { }
 
 impl Sink for Echo {
     type SinkItem = Event;
@@ -394,7 +423,6 @@ impl Join {
     }
 }
 
-impl Module<()> for Join { }
 impl Sink for Join {
     type SinkItem = Event;
     type SinkError = ();
@@ -466,7 +494,6 @@ struct SimpleModule<S,T,M> {
 impl<S,T,M> SimpleModule<S,T,M> 
     where S: Future<Item = Option<M>, Error = ()>,
           T: Future<Item = Element, Error = ()>,
-          M: Sync + Send
 {
     pub fn new(recv: Box<FnMut(Event) -> S>, send: Box<FnMut(M) -> T>) -> Self {
         Self {
@@ -476,12 +503,6 @@ impl<S,T,M> SimpleModule<S,T,M>
         }
     }
 }
-
-impl<S,T,M> Module<()> for SimpleModule<S,T,M>
-    where S: Future<Item = Option<M>, Error = ()>,
-          T: Future<Item = Element, Error = ()>,
-          M: Sync + Send
-{ }
 
 impl<S,T,M> Sink for SimpleModule<S,T,M> 
     where S: Future<Item = Option<M>, Error = ()>,
@@ -497,7 +518,10 @@ impl<S,T,M> Sink for SimpleModule<S,T,M>
                 self.inner = State::Receiving(s);
                 Ok(AsyncSink::Ready)
             },
-            _ => Ok(AsyncSink::NotReady(item))
+            _ => {
+                task::current().notify();
+                Ok(AsyncSink::NotReady(item))
+            }
         }
     }
 
@@ -539,4 +563,3 @@ impl<S,T,M> Stream for SimpleModule<S,T,M>
         }
     }
 }
-

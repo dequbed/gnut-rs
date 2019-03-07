@@ -9,6 +9,7 @@ futures = "0.1"
 tokio = "0.1"
 tokio-xmpp = "1.0.0"
 xmpp-parsers = "0.12"
+random = "0.12"
 
 [patch.crates-io]
 tokio-xmpp = { path = "../tokio-xmpp" }
