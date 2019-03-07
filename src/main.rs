@@ -201,32 +201,6 @@ impl ModuleHandler {
         let (hsink, hstream) = Hello::new().split();
         let (jsink, jstream) = Join::new().split();
 
-        let (tsink, tstream) = SimpleModule::new(Box::new(|event| {
-            if let Some(message) = event.into_stanza().and_then(|stanza| Message::try_from(stanza).ok()) {
-                    let mut delay = false;
-                    for p in message.payloads {
-                        println!("{:?}", p);
-                        if let Ok(d) = Delay::try_from(p) {
-                            println!("{:?}", d);
-                            delay = true;
-                        }
-                    }
-                    if !delay {
-                        match (message.from, message.bodies.get("")) {
-                            (Some(ref from), Some(ref body)) => {
-                                if body.0.starts_with("^hai") {
-                                    let mut message = Message::new(Some(from.clone()));
-                                    message.bodies.insert(String::new(), Body("Haai >^.^<".into()));
-                                    return future::ok(Some(message.into()));
-                                }
-                            },
-                            _ => {}
-                        }
-                    }
-            }
-
-            future::ok(None)
-        }), Box::new(|element| { future::ok(element) })).split();
 
         ModuleHandler {
             sink: Box::new(esink
