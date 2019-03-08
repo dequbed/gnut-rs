@@ -31,21 +31,22 @@ impl CommandModule {
 }
 
 impl Sink for CommandModule {
-    type SinkItem = Event;
+    type SinkItem = Message;
     type SinkError = ();
 
-    fn start_send(&mut self, item: Self::SinkItem) -> StartSend<Self::SinkItem, Self::SinkError> {
-        if let Some(message) = item.into_stanza().and_then(|stanza| Message::try_from(stanza).ok()) {
-            for p in message.payloads.iter() {
-                if let Ok(_) = Delay::try_from(p.clone()) {
-                    return Ok(AsyncSink::Ready);
-                }
+    fn start_send(&mut self, message: Self::SinkItem) -> StartSend<Self::SinkItem, Self::SinkError> {
+        for p in message.payloads.iter() {
+            if let Ok(_) = Delay::try_from(p.clone()) {
+                return Ok(AsyncSink::Ready);
             }
+        }
 
-            if self.q.filter(&message) {
-                let f = self.q.call(message, self.tx.clone()).into_future();
-                self.e.spawn_local(Box::new(f));
-            }
+        println!("Received {:?}", message);
+
+        if self.q.filter(&message) {
+            println!("calling");
+            let f = self.q.call(message, self.tx.clone()).into_future();
+            self.e.spawn_local(Box::new(f)).unwrap();
         }
 
         Ok(AsyncSink::Ready)

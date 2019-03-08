@@ -8,7 +8,9 @@ use xmpp_parsers::presence::Presence;
 use std::cell::Cell;
 use std::collections::HashMap;
 
-struct Pipes {
+use super::ReturnPath;
+
+pub struct Pipes {
     iq: mpsc::Sender<Iq>,
     message: ChatPipe,
     presence: mpsc::Sender<Presence>,
@@ -71,6 +73,15 @@ impl Sink for Pipes {
     }
 }
 
+impl Stream for Pipes {
+    type Item = Element;
+    type Error = ();
+
+    fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
+        Stream::poll(&mut self.message)
+    }
+}
+
 impl Future for Pipes {
     type Item = ();
     type Error = ();
@@ -112,7 +123,7 @@ impl Sink for CommandRouter {
     }
 }
 
-enum PipeCmd {
+pub enum PipeCmd {
     MUC(ChatCmd),
 }
 
@@ -181,7 +192,28 @@ impl Sink for ChatPipe {
 
     }
 }
+impl Stream for ChatPipe {
+    type Item = Element;
+    type Error = ();
 
+    fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
+        match self.dm.poll()? {
+            Async::Ready(Some(e)) => return Ok(Async::Ready(Some(e))),
+            Async::Ready(None) => return Ok(Async::Ready(None)),
+            Async::NotReady => {  }
+        }
+
+        for c in self.muc.values_mut() {
+            match c.poll()? {
+                Async::Ready(Some(e)) => return Ok(Async::Ready(Some(e))),
+                Async::Ready(None) => return Ok(Async::Ready(None)),
+                Async::NotReady => {  }
+            }
+        }
+
+        Ok(Async::NotReady)
+    }
+}
 impl Future for ChatPipe {
     type Item = ();
     type Error = ();
@@ -208,17 +240,21 @@ enum ChatCmd {
     Leave(Jid),
 }
 
-struct ChannelHandler {
+pub struct ChannelHandler {
     dispatch: Vec<Dispatch>,
 }
 impl ChannelHandler {
     pub fn new() -> Self {
-        Self::new_with_modules(Vec::new())
+        Self::new_with_modules(Vec::new(), Vec::new())
     }
 
-    pub fn new_with_modules(dispatch: Vec<Box<Sink<SinkItem = Message, SinkError = ()>>>) -> Self {
+    pub fn new_with_modules(sinks: Vec<Box<Sink<SinkItem = Message, SinkError = ()>>>,
+                            streams: Vec<Box<Stream<Item = Element, Error = ()>>>
+        ) -> Self {
+        let sii = sinks.into_iter();
+        let sti = streams.into_iter();
         Self {
-            dispatch: dispatch.into_iter().map(|x| Dispatch::new(x)).collect()
+            dispatch: sii.zip(sti).map(|(x,y)| Dispatch::new(x, y)).collect(),
         }
     }
 }
@@ -249,15 +285,32 @@ impl Sink for ChannelHandler {
         Ok(Async::Ready(()))
     }
 }
+impl Stream for ChannelHandler {
+    type Item = Element;
+    type Error = ();
+
+    fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
+        for d in self.dispatch.iter_mut() {
+            match d.poll()? {
+                Async::Ready(Some(v)) => return Ok(Async::Ready(Some(v))),
+                Async::Ready(None) => return Ok(Async::Ready(None)),
+                Async::NotReady => {}
+            }
+        }
+        return Ok(Async::NotReady)
+    }
+}
 
 struct Dispatch {
     inner: Box<Sink<SinkItem=Message, SinkError=()>>,
+    stream: Box<Stream<Item=Element, Error=()>>,
     state: AsyncSink<()>,
 }
 impl Dispatch {
-    pub fn new(inner: Box<Sink<SinkItem=Message, SinkError=()>>) -> Self{
+    pub fn new(inner: Box<Sink<SinkItem=Message, SinkError=()>>, stream: Box<Stream<Item=Element, Error=()>>) -> Self{
         Self {
             inner,
+            stream,
             state: AsyncSink::NotReady(())
         }
     }
@@ -288,5 +341,13 @@ impl Sink for Dispatch {
         try_ready!(self.inner.poll_complete());
         self.state = AsyncSink::Ready;
         Ok(Async::Ready(()))
+    }
+}
+impl Stream for Dispatch {
+    type Item = Element;
+    type Error = ();
+
+    fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
+        self.stream.poll()
     }
 }

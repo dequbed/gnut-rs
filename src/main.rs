@@ -21,6 +21,7 @@ mod command;
 use command::CommandModule;
 
 mod pipes;
+use pipes::{Pipes, ChannelHandler};
 
 fn main() {
     let args: Vec<String> = args().collect();
@@ -39,142 +40,81 @@ fn main() {
 
     let (sink, stream) = client.split();
 
-    let (mut tx, rx) = futures::unsync::mpsc::unbounded();
-    let tx2 = tx.clone();
+    let (mut tx, rx) = futures::unsync::mpsc::channel(16);
     rt.spawn(
         rx.forward(
             sink.sink_map_err(|_| panic!("Pipe"))
         )
-            .map(|(rx, mut sink)| {
-                drop(rx);
-                let _ = sink.close();
-            })
-            .map_err(|e| {
-                panic!("Send error: {:?}", e);
-            })
+        .map(|(rx, mut sink)| {
+            drop(rx);
+            let _ = sink.close();
+        })
+        .map_err(|e| {
+            panic!("Send error: {:?}", e);
+        })
     );
 
-    let filtered = stream.filter_map(move |event| {
-        if event.is_online() {
-            println!("Online");
+    let (cmi, cms) = CommandModule::new(executor).split();
 
-            let presence = make_presence();
-            tx.start_send(Packet::Stanza(presence)).unwrap();
+    let dm = ChannelHandler::new_with_modules(vec![Box::new(cmi)], vec![Box::new(cms)]);
+    let (iqtx, iqrx) = futures::unsync::mpsc::channel(16);
+    let (presencetx, presencerx) = futures::unsync::mpsc::channel(16);
+    let (controltx, controlrx) = futures::unsync::mpsc::channel(16);
+    let (psink, pstream) = Pipes::new(iqtx, dm, presencetx, controlrx).split();
 
-            None
-        } else if let Event::Stanza(ref s) = event {
-            if s.name() == "presence" {
-                let p = Presence::try_from(s.clone());
-                println!("{:?}", p);
-                if let Ok(p) = p {
-                    if let Some(_) = p.from {
-                        for pl in p.payloads {
-                            if let Ok(mu) = MucUser::try_from(pl) {
-                                println!("{:?}", mu);
-                            }
+    rt.spawn(
+        pstream
+        .forward(ReturnPath::new(tx.clone()))
+        .map(|_| {})
+    );
 
-                            /*
-                             *Element {
-                             *    prefix: None,
-                             *    name: "x",
-                             *    namespaces:
-                             *        NamespaceSet {
-                             *            parent: RefCell {
-                             *                value: Some(NamespaceSet {
-                             *                    parent: RefCell { value: None }, 
-                             *                    namespaces: {None: "jabber:client"} 
-                             *                }) 
-                             *            },
-                             *            namespaces: {
-                             *                None: "http://jabber.org/protocol/muc#user"
-                             *            }
-                             *        },
-                             *    attributes: {},
-                             *    children: [
-                             *        Element(Element {
-                             *            prefix: None, 
-                             *            name: "item", 
-                             *            namespaces: NamespaceSet { 
-                             *                parent: RefCell {
-                             *                    value: Some(NamespaceSet { 
-                             *                        parent: RefCell { 
-                             *                            value: Some(NamespaceSet { 
-                             *                                parent: RefCell { value: None }, 
-                             *                                namespaces: {None: "jabber:client"} 
-                             *                            }) 
-                             *                        }, 
-                             *                        namespaces: { None: "http://jabber.org/protocol/muc#user"} 
-                             *                    }) 
-                             *                }, 
-                             *                namespaces: { None: "http://jabber.org/protocol/muc#user" } 
-                             *            }, 
-                             *            attributes: {
-                             *                "affiliation": "none", 
-                             *                "jid": "gnut@paranoidlabs.org/64916298471364904842953346", "role": "participant"
-                             *            },
-                             *            children: [] 
-                             *        }), 
-                             *        Element(Element { 
-                             *            prefix: None, 
-                             *            name: "status", 
-                             *            namespaces: NamespaceSet { 
-                             *                parent: RefCell { 
-                             *                    value: Some(NamespaceSet { 
-                             *                        parent: RefCell { 
-                             *                            value: Some(NamespaceSet { 
-                             *                                parent: RefCell { value: None }, 
-                             *                                namespaces: {None: "jabber:client"} 
-                             *                            }) 
-                             *                        }, 
-                             *                        namespaces: { None: "http://jabber.org/protocol/muc#user" } 
-                             *                    }) 
-                             *                }, 
-                             *                namespaces: { None: "http://jabber.org/protocol/muc#user" } 
-                             *            }, 
-                             *            attributes: {"code": "100"},
-                             *            children: []
-                             *        }), 
-                             *        Element(Element { 
-                             *            prefix: None, 
-                             *            name: "status", 
-                             *            namespaces: NamespaceSet {
-                             *                parent: RefCell { 
-                             *                    value: Some(NamespaceSet { 
-                             *                        parent: RefCell { 
-                             *                            value: Some(NamespaceSet { 
-                             *                                parent: RefCell { value: None }, 
-                             *                                namespaces: {None: "jabber:client"} 
-                             *                            }) 
-                             *                        }, 
-                             *                        namespaces: {None: "http://jabber.org/protocol/muc#user"}
-                             *                    }) 
-                             *                }, 
-                             *                namespaces: {None: "http://jabber.org/protocol/muc#user"} 
-                             *            },
-                             *            attributes: {"code": "110"}, 
-                             *            children: [] 
-                             *        })
-                             *    ]
-                             *}
-                             */
+    let wait_for_stream_end = false;
+    rt.block_on(
+        stream.filter_map(move |event| {
+            if wait_for_stream_end {
+                None
+            } else if event.is_online() {
+                println!("Online");
 
-                        }
-                    }
-                }
+                let presence = make_presence();
+                tx.start_send(Packet::Stanza(presence)).unwrap();
+                None
+            } else {
+                event.into_stanza()
             }
-            Some(event)
-        } else {
-            Some(event)
+        })
+        .map_err(|_| {})
+        .forward(psink)
+        .map(|_| {})
+    );
+}
+
+pub struct ReturnPath {
+    tx: mpsc::Sender<Packet>
+}
+impl ReturnPath {
+    pub fn new(tx: mpsc::Sender<Packet>) -> Self {
+        Self {
+            tx
         }
-    });
+    }
+}
+impl Sink for ReturnPath {
+    type SinkItem = Element;
+    type SinkError = ();
 
-    let (psink, pstream) = ModuleHandler::new(executor).split();
+    fn start_send(&mut self, item: Self::SinkItem) -> StartSend<Self::SinkItem, Self::SinkError> {
+        self.tx.start_send(Packet::Stanza(item))
+        .map(|x| x.map(|p| match p {
+            Packet::Stanza(i) => i,
+            _ => panic!("Sink returned different item on NotReady!"),
+        }))
+        .map_err(|_| {})
+    }
 
-    let one = filtered.map_err(|_| {}).forward(psink).map(|_| {});
-    let two = pstream.map(|e| Packet::Stanza(e)).forward(tx2.sink_map_err(|_| {})).map(|_| {});
-
-    rt.spawn(one);
-    rt.block_on(two);
+    fn poll_complete(&mut self) -> Poll<(), Self::SinkError> {
+        self.tx.poll_complete().map_err(|_| {})
+    }
 }
 
 fn make_presence() -> Element {
@@ -205,18 +145,15 @@ impl ModuleHandler {
         let (hsink, hstream) = Hello::new().split();
         let (jsink, jstream) = Join::new().split();
 
-        let (csink, cstream) = CommandModule::new(e).split();
 
         ModuleHandler {
             sink: Box::new(esink
                    .fanout(hsink)
                    .fanout(jsink)
-                   .fanout(csink)
             ),
             stream: Box::new(estream
                      .select(hstream)
                      .select(jstream)
-                     .select(cstream)
             ),
         }
     }
