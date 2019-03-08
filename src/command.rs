@@ -1,15 +1,16 @@
 use futures::{Sink, Stream, Poll, Async, StartSend, IntoFuture, future, Future, AsyncSink};
 use futures::sync::mpsc::{Sender, Receiver, channel};
 use futures::future::{FutureResult, Either};
-use tokio::runtime::TaskExecutor;
 use tokio_xmpp::Event;
 use xmpp_parsers::{Jid, Element, TryFrom};
-use xmpp_parsers::message::{Body, Message};
+use xmpp_parsers::message::{Body, Message, MessageType};
 use xmpp_parsers::delay::Delay;
+use tokio::runtime::current_thread::TaskExecutor;
 
 use random::{self, Source};
+use std::usize;
 
-struct CommandModule {
+pub struct CommandModule {
     e: TaskExecutor,
     tx: Sender<(Jid, String)>,
     rx: Receiver<(Jid, String)>,
@@ -43,7 +44,7 @@ impl Sink for CommandModule {
 
             if self.q.filter(&message) {
                 let f = self.q.call(message, self.tx.clone()).into_future();
-                self.e.spawn(f);
+                self.e.spawn_local(Box::new(f));
             }
         }
 
@@ -60,13 +61,25 @@ impl Stream for CommandModule {
 
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
         if let Some((j,m)) = try_ready!(self.rx.poll()) {
+            let mut type_ = MessageType::Chat;
+            if is_groupchat(&j) {
+                type_ = MessageType::Groupchat;
+            }
             let mut message = Message::new(Some(j));
+            message.type_ = type_;
+            if message.type_ == MessageType::Groupchat {
+                message.to = Some(Jid::into_bare_jid(message.to.unwrap()));
+            }
             message.bodies.insert(String::new(), Body(m));
             Ok(Async::Ready(Some(message.into())))
         } else {
             Ok(Async::NotReady)
         }
     }
+}
+
+fn is_groupchat(j: &Jid) -> bool {
+    j.domain == "chat.paranoidlabs.org" && j.node.is_some()
 }
 
 struct Quotes {
@@ -82,7 +95,7 @@ impl Quotes {
     }
 
     fn filter(&mut self, message: &Message) -> bool {
-        if let (Some(ref from), Some(ref body)) = (&message.from, message.bodies.get("")) {
+        if let (Some(ref _from), Some(ref body)) = (&message.from, message.bodies.get("")) {
             if body.0.starts_with("^quote") {
                 return true;
             }
@@ -94,17 +107,36 @@ impl Quotes {
     fn call(&mut self, message: Message, tx: Sender<(Jid, String)>) -> impl Future<Item = (), Error = ()> {
         match (message.from, message.bodies.get("")) {
             (Some(ref from), Some(ref body)) => {
-                let args: Vec<&str> = body.0.split_whitespace().collect();
+                let mut args = body.0.split_whitespace();
                 let out;
-                if args.len() == 1 {
+                if let Some(a) = args.nth(1) { 
+                    if a == "add" {
+                        let mut q = String::new();
+                        for a in args {
+                            q.push_str(a);
+                        }
+
+                        if q.trim().is_empty() {
+                            out = format!("Invalid quote");
+                        } else {
+                            self.quotes.push(q);
+                            out = format!("Added new quote #{}", self.quotes.len());
+                        }
+                    } else if let Ok(idx) = usize::from_str_radix(a, 10) {
+                        if idx >= self.quotes.len() {
+                            out = format!("Invalid quote #{}", idx)
+                        } else {
+                            out = self.quotes[idx].clone();
+                        }
+                    } else {
+                        out = format!("Usage: ^quote <index>|add quote")
+                    }
+                } else {
                     // Random
                     let idx = self.random.read_u64() as usize;
                     let clamped = idx % self.quotes.len();
                     out = self.quotes[clamped as usize].clone();
-                } else {
-                    out = "Not yet implemented".into();
                 }
-
                 return Either::A(tx.send((from.clone(), out)).map(|_| {}).map_err(|_| {}))
             },
             _ => return Either::B(future::ok(()))

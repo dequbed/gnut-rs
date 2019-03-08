@@ -7,7 +7,7 @@ use futures::unsync::mpsc;
 use std::mem;
 use std::env::args;
 use std::process::exit;
-use tokio::runtime::current_thread::Runtime;
+use tokio::runtime::current_thread::{Runtime, TaskExecutor};
 use tokio_xmpp::{Client, Packet, Event};
 use xmpp_parsers::{Jid, Element, TryFrom};
 use xmpp_parsers::message::{Body, Message};
@@ -18,6 +18,9 @@ use xmpp_parsers::delay::Delay;
 use std::collections::HashMap;
 
 mod command;
+use command::CommandModule;
+
+mod pipes;
 
 fn main() {
     let args: Vec<String> = args().collect();
@@ -30,6 +33,7 @@ fn main() {
     let password = &args[2];
 
     let mut rt = Runtime::new().unwrap();
+    let executor = TaskExecutor::current();
 
     let client = Client::new(jid, password).unwrap();
 
@@ -164,7 +168,7 @@ fn main() {
         }
     });
 
-    let (psink, pstream) = ModuleHandler::new().split();
+    let (psink, pstream) = ModuleHandler::new(executor).split();
 
     let one = filtered.map_err(|_| {}).forward(psink).map(|_| {});
     let two = pstream.map(|e| Packet::Stanza(e)).forward(tx2.sink_map_err(|_| {})).map(|_| {});
@@ -196,22 +200,23 @@ struct ModuleHandler {
     stream: Box<Stream<Item = Element, Error = ()>>,
 }
 impl ModuleHandler {
-    pub fn new() -> ModuleHandler {
+    pub fn new(e: TaskExecutor) -> ModuleHandler {
         let (esink, estream) = Echo::new().split();
         let (hsink, hstream) = Hello::new().split();
         let (jsink, jstream) = Join::new().split();
 
+        let (csink, cstream) = CommandModule::new(e).split();
 
         ModuleHandler {
             sink: Box::new(esink
                    .fanout(hsink)
                    .fanout(jsink)
-                   //.fanout(tsink)
+                   .fanout(csink)
             ),
             stream: Box::new(estream
                      .select(hstream)
                      .select(jstream)
-                     //.select(tstream)
+                     .select(cstream)
             ),
         }
     }
