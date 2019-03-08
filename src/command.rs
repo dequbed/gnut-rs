@@ -115,13 +115,14 @@ impl Quotes {
                         let mut q = String::new();
                         for a in args {
                             q.push_str(a);
+                            q.push_str(" ");
                         }
 
                         if q.trim().is_empty() {
                             out = format!("Invalid quote");
                         } else {
                             self.quotes.push(q);
-                            out = format!("Added new quote #{}", self.quotes.len());
+                            out = format!("Added new quote #{}", self.quotes.len()-1);
                         }
                     } else if let Ok(idx) = usize::from_str_radix(a, 10) {
                         if idx >= self.quotes.len() {
