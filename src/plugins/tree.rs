@@ -61,7 +61,7 @@ impl Command for Dice {
         "throw"
     }
 
-    fn call(&mut self, m: &SendMessage, mut args: SplitWhitespace) -> String {
+    fn call(&mut self, _m: &SendMessage, mut args: SplitWhitespace) -> String {
         if let Some(a) = args.next() {
             let v: Vec<&str> = a.split('d').collect();
             if v.len() == 2 {
