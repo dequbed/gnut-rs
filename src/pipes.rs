@@ -6,12 +6,9 @@ use xmpp_parsers::message::{Message, MessageType, Body, Subject, Thread};
 use xmpp_parsers::delay::Delay;
 use xmpp_parsers::presence::Presence;
 
-use std::cell::Cell;
 use std::collections::HashMap;
 
 use std::collections::BTreeMap;
-
-use super::ReturnPath;
 
 pub struct Pipes {
     iq: mpsc::Sender<Iq>,

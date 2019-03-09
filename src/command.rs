@@ -1,15 +1,9 @@
-use futures::{Sink, Stream, Poll, Async, StartSend, IntoFuture, future, Future, AsyncSink, task};
-use futures::sync::mpsc::{Sender, Receiver, channel};
-use futures::future::{FutureResult, Either};
-use tokio_xmpp::Event;
-use xmpp_parsers::{Jid, Element, TryFrom};
+use futures::{Sink, Stream, Poll, Async, StartSend, IntoFuture, Future, AsyncSink, task};
+use xmpp_parsers::Element;
 use xmpp_parsers::message::{Body, Message, MessageType};
-use xmpp_parsers::delay::Delay;
-use tokio::runtime::current_thread::TaskExecutor;
 
 use crate::pipes::SendMessage;
 
-use std::usize;
 use std::collections::VecDeque;
 
 use crate::plugins::{Quotes, Snack};

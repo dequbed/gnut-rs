@@ -1,21 +1,14 @@
 #[macro_use]
 extern crate futures;
 
-use futures::{future, Future, Sink, Stream, Poll, Async, AsyncSink, StartSend, task};
-use futures::future::FutureResult;
+use futures::{Future, Sink, Stream, Poll, StartSend};
 use futures::unsync::mpsc;
-use std::mem;
 use std::env::args;
 use std::process::exit;
-use tokio::runtime::current_thread::{Runtime, TaskExecutor};
-use tokio_xmpp::{Client, Packet, Event};
-use xmpp_parsers::{Jid, Element, TryFrom};
-use xmpp_parsers::message::{Body, Message};
+use tokio::runtime::current_thread::Runtime;
+use tokio_xmpp::{Client, Packet};
+use xmpp_parsers::Element;
 use xmpp_parsers::presence::{Presence, Show as PresenceShow, Type as PresenceType};
-use xmpp_parsers::muc::MucUser;
-use xmpp_parsers::delay::Delay;
-
-use std::collections::HashMap;
 
 mod command;
 use command::CommandModule;
@@ -36,7 +29,6 @@ fn main() {
     let password = &args[2];
 
     let mut rt = Runtime::new().unwrap();
-    let executor = TaskExecutor::current();
 
     let client = Client::new(jid, password).unwrap();
 
@@ -59,9 +51,9 @@ fn main() {
     let (cmi, cms) = CommandModule::new().split();
 
     let dm = ChannelHandler::new_with_modules(vec![Box::new(cmi)], vec![Box::new(cms)]);
-    let (iqtx, iqrx) = futures::unsync::mpsc::channel(16);
-    let (presencetx, presencerx) = futures::unsync::mpsc::channel(16);
-    let (controltx, controlrx) = futures::unsync::mpsc::channel(16);
+    let (iqtx, _iqrx) = futures::unsync::mpsc::channel(16);
+    let (presencetx, _presencerx) = futures::unsync::mpsc::channel(16);
+    let (_controltx, controlrx) = futures::unsync::mpsc::channel(16);
     let (psink, pstream) = Pipes::new(iqtx, dm, presencetx, controlrx).split();
 
     rt.spawn(
@@ -88,7 +80,7 @@ fn main() {
         .map_err(|_| {})
         .forward(psink)
         .map(|_| {})
-    );
+    ).unwrap();
 }
 
 pub struct ReturnPath {
