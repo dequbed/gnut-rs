@@ -17,7 +17,7 @@ mod pipes;
 use pipes::{Pipes, ChannelHandler, SendMessage};
 
 mod plugins;
-use plugins::{Quotes, CommandM};
+use plugins::{Quotes, CommandM, Join};
 
 mod into_stream;
 
@@ -69,7 +69,8 @@ fn main() {
 
     let quotes = Combinator::new(Box::new(Quotes::new(Vec::new())));
     let command = Combinator::new(Box::new(CommandM::new()));
-    let (cmi, cms) = CombinatorModule::new_with_modules(vec![quotes, command]).split();
+    let join = Combinator::new(Box::new(Join::new()));
+    let (cmi, cms) = CombinatorModule::new_with_modules(vec![quotes, command, join]).split();
 
     let dm = ChannelHandler::new_with_modules(vec![Box::new(cmi)], vec![Box::new(cms)]);
     let (iqtx, _iqrx) = futures::unsync::mpsc::channel(16);
