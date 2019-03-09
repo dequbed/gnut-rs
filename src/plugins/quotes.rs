@@ -4,6 +4,7 @@ use random::{self, Source};
 
 use crate::pipes::SendMessage;
 use crate::command::make_reply;
+use crate::command::FutureMessagePlugin;
 
 pub struct Quotes {
     quotes: Vec<String>,
@@ -16,8 +17,13 @@ impl Quotes {
             random: random::Default::new(),
         }
     }
+}
+impl FutureMessagePlugin for Quotes {
+    fn call(&mut self, message: SendMessage) -> Box<Future<Item = Option<SendMessage>, Error = ()>> {
+        if self.quotes.len() == 0 {
+            return Box::new(future::ok(None));
+        }
 
-    pub fn call(&mut self, message: SendMessage) -> impl Future<Item = Option<SendMessage>, Error = ()> {
         if let Some(ref body) = &message.body {
             if body.0.starts_with("^quote") {
                 let mut args = body.0.split_whitespace();
@@ -51,10 +57,10 @@ impl Quotes {
                     let clamped = idx % self.quotes.len();
                     out = self.quotes[clamped as usize].clone();
                 }
-                return future::ok(Some(make_reply(&message, out)))
+                return Box::new(future::ok(Some(make_reply(&message, out))))
             }
         }
 
-        future::ok(None)
+        Box::new(future::ok(None))
     }
 }

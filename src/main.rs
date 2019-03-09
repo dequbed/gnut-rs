@@ -11,12 +11,31 @@ use xmpp_parsers::Element;
 use xmpp_parsers::presence::{Presence, Show as PresenceShow, Type as PresenceType};
 
 mod command;
-use command::CommandModule;
+use command::{CombinatorModule, StreamPlugin, FuturePlugin, Combinator};
 
 mod pipes;
-use pipes::{Pipes, ChannelHandler};
+use pipes::{Pipes, ChannelHandler, SendMessage};
 
 mod plugins;
+use plugins::{Quotes, CommandM};
+
+mod into_stream;
+
+struct ExamplePlugin;
+impl StreamPlugin for ExamplePlugin {
+    fn call(&mut self, _e: SendMessage) -> Box<Stream<Item=Element, Error=()>> {
+        use futures::stream;
+        Box::new(stream::empty())
+    }
+}
+struct ExampleFPlugin;
+impl FuturePlugin for ExampleFPlugin {
+    fn call(&mut self, _e: SendMessage) -> Box<Future<Item=Option<Element>, Error=()>> {
+        use futures::future;
+        Box::new(future::empty())
+    }
+}
+
 
 fn main() {
     let args: Vec<String> = args().collect();
@@ -48,7 +67,9 @@ fn main() {
         })
     );
 
-    let (cmi, cms) = CommandModule::new().split();
+    let quotes = Combinator::new(Box::new(Quotes::new(Vec::new())));
+    let command = Combinator::new(Box::new(CommandM::new()));
+    let (cmi, cms) = CombinatorModule::new_with_modules(vec![quotes, command]).split();
 
     let dm = ChannelHandler::new_with_modules(vec![Box::new(cmi)], vec![Box::new(cms)]);
     let (iqtx, _iqrx) = futures::unsync::mpsc::channel(16);

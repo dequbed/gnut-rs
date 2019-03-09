@@ -456,3 +456,9 @@ impl Into<Message> for SendMessage {
         }
     }
 }
+impl Into<Element> for SendMessage {
+    fn into(self) -> Element {
+        let m: Message = self.into();
+        m.into()
+    }
+}
