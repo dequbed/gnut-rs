@@ -180,6 +180,12 @@ impl Sink for CombinatorModule {
     type SinkError = ();
 
     fn start_send(&mut self, m: Self::SinkItem) -> StartSend<Self::SinkItem, Self::SinkError> {
+        println!("C {:?}", m);
+        // We have absolutely no reason to keep delay messages at the moment
+        if m.delay.is_some() {
+            return Ok(AsyncSink::Ready);
+        }
+
         let mut ready = true;
         for s in self.sinks.iter_mut() {
             ready = ready | match s.poll_complete()? {

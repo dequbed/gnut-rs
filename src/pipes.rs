@@ -163,13 +163,14 @@ impl Sink for ChatPipe {
                 Err(_) => return Err(()),
             },
             MessageType::Groupchat => {
+                println!("GC to {:?}", &item.to);
                 if let Some(j) = item.to.clone() {
-                    if let Some(c) = self.muc.get_mut(&j.into_bare_jid()) {
-                        match c.start_send(item.into()) {
+                    //if let Some(c) = self.muc.get_mut(&j.into_bare_jid()) {
+                        match self.dm.start_send(item.into()) {
                             Ok(AsyncSink::Ready) => return Ok(AsyncSink::Ready),
                             Ok(AsyncSink::NotReady(m)) => return Ok(AsyncSink::NotReady(m.into())),
                             Err(_) => return Err(()),
-                        }
+                       // }
                     }
                 }
 

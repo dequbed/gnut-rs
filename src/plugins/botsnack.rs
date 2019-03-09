@@ -2,6 +2,7 @@ use futures::{future, Future};
 
 use crate::pipes::SendMessage;
 use crate::command::make_reply;
+use crate::command::FutureMessagePlugin;
 
 use random::{self, Source};
 
@@ -17,17 +18,19 @@ impl Snack {
             random: random::Default::new(),
         }
     }
-    pub fn call(&mut self, message: SendMessage) -> impl Future<Item = Option<SendMessage>, Error = ()> {
+}
+impl FutureMessagePlugin for Snack {
+    fn call(&mut self, message: SendMessage) -> Box<Future<Item = Option<SendMessage>, Error = ()>> {
         if let Some(ref body) = &message.body {
             if body.0.starts_with("^goodbot") {
-                return future::ok(Some(make_reply(&message, ">^.^<".into())));
+                return Box::new(future::ok(Some(make_reply(&message, ">^.^<".into()))));
             } else if body.0.starts_with("^botsnack") {
                 let idx = self.random.read_u64() as usize;
                 let clamped = idx % self.snackreplies.len();
-                return future::ok(Some(make_reply(&message, self.snackreplies[clamped as usize].clone())));
+                return Box::new(future::ok(Some(make_reply(&message, self.snackreplies[clamped as usize].clone()))));
             }
         }
 
-        future::ok(None)
+        Box::new(future::ok(None))
     }
 }

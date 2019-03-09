@@ -20,10 +20,6 @@ impl Quotes {
 }
 impl FutureMessagePlugin for Quotes {
     fn call(&mut self, message: SendMessage) -> Box<Future<Item = Option<SendMessage>, Error = ()>> {
-        if self.quotes.len() == 0 {
-            return Box::new(future::ok(None));
-        }
-
         if let Some(ref body) = &message.body {
             if body.0.starts_with("^quote") {
                 let mut args = body.0.split_whitespace();
@@ -52,6 +48,10 @@ impl FutureMessagePlugin for Quotes {
                         out = format!("Usage: ^quote <index>|add quote")
                     }
                 } else {
+                    if self.quotes.len() == 0 {
+                        return Box::new(future::ok(None));
+                    }
+
                     // Random
                     let idx = self.random.read_u64() as usize;
                     let clamped = idx % self.quotes.len();
