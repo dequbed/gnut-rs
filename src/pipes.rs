@@ -2,11 +2,14 @@ use futures::{StartSend, Poll, Async, Sink, AsyncSink, Future, Stream};
 use futures::unsync::mpsc;
 use xmpp_parsers::{Jid, Element, TryFrom};
 use xmpp_parsers::iq::Iq;
-use xmpp_parsers::message::{Message, MessageType};
+use xmpp_parsers::message::{Message, MessageType, Body, Subject, Thread};
+use xmpp_parsers::delay::Delay;
 use xmpp_parsers::presence::Presence;
 
 use std::cell::Cell;
 use std::collections::HashMap;
+
+use std::collections::BTreeMap;
 
 use super::ReturnPath;
 
@@ -157,17 +160,17 @@ impl Sink for ChatPipe {
 
     fn start_send(&mut self, item: Self::SinkItem) -> StartSend<Self::SinkItem, Self::SinkError> {
         match item.type_ {
-            MessageType::Chat => match self.dm.start_send(item) {
+            MessageType::Chat => match self.dm.start_send(item.into()) {
                 Ok(AsyncSink::Ready) => return Ok(AsyncSink::Ready),
-                Ok(AsyncSink::NotReady(m)) => return Ok(AsyncSink::NotReady(m)),
+                Ok(AsyncSink::NotReady(m)) => return Ok(AsyncSink::NotReady(m.into())),
                 Err(_) => return Err(()),
             },
             MessageType::Groupchat => {
                 if let Some(j) = item.to.clone() {
                     if let Some(c) = self.muc.get_mut(&j.into_bare_jid()) {
-                        match c.start_send(item) {
+                        match c.start_send(item.into()) {
                             Ok(AsyncSink::Ready) => return Ok(AsyncSink::Ready),
-                            Ok(AsyncSink::NotReady(m)) => return Ok(AsyncSink::NotReady(m)),
+                            Ok(AsyncSink::NotReady(m)) => return Ok(AsyncSink::NotReady(m.into())),
                             Err(_) => return Err(()),
                         }
                     }
@@ -242,24 +245,34 @@ enum ChatCmd {
 
 pub struct ChannelHandler {
     dispatch: Vec<Dispatch>,
+    select: Vec<Select>
 }
 impl ChannelHandler {
     pub fn new() -> Self {
         Self::new_with_modules(Vec::new(), Vec::new())
     }
 
-    pub fn new_with_modules(sinks: Vec<Box<Sink<SinkItem = Message, SinkError = ()>>>,
+    pub fn new_with_modules(sinks: Vec<Box<Sink<SinkItem = SendMessage, SinkError = ()>>>,
                             streams: Vec<Box<Stream<Item = Element, Error = ()>>>
         ) -> Self {
         let sii = sinks.into_iter();
         let sti = streams.into_iter();
         Self {
-            dispatch: sii.zip(sti).map(|(x,y)| Dispatch::new(x, y)).collect(),
+            dispatch: sii.map(|x| Dispatch::new(x)).collect(),
+            select: sti.map(|x| Select::new(x)).collect(),
         }
+    }
+
+    pub fn add_sink(&mut self, sink: Box<Sink<SinkItem = SendMessage, SinkError = ()>>) {
+        self.dispatch.push(Dispatch::new(sink));
+    }
+
+    pub fn add_stream(&mut self, stream: Box<Stream<Item = Element, Error = ()>>) {
+        self.select.push(Select::new(stream));
     }
 }
 impl Sink for ChannelHandler {
-    type SinkItem = Message;
+    type SinkItem = SendMessage;
     type SinkError = ();
 
     fn start_send(&mut self, item: Self::SinkItem) -> StartSend<Self::SinkItem, Self::SinkError> {
@@ -290,8 +303,8 @@ impl Stream for ChannelHandler {
     type Error = ();
 
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
-        for d in self.dispatch.iter_mut() {
-            match d.poll()? {
+        for s in self.select.iter_mut() {
+            match s.poll()? {
                 Async::Ready(Some(v)) => return Ok(Async::Ready(Some(v))),
                 Async::Ready(None) => return Ok(Async::Ready(None)),
                 Async::NotReady => {}
@@ -302,15 +315,13 @@ impl Stream for ChannelHandler {
 }
 
 struct Dispatch {
-    inner: Box<Sink<SinkItem=Message, SinkError=()>>,
-    stream: Box<Stream<Item=Element, Error=()>>,
+    inner: Box<Sink<SinkItem=SendMessage, SinkError=()>>,
     state: AsyncSink<()>,
 }
 impl Dispatch {
-    pub fn new(inner: Box<Sink<SinkItem=Message, SinkError=()>>, stream: Box<Stream<Item=Element, Error=()>>) -> Self{
+    pub fn new(inner: Box<Sink<SinkItem=SendMessage, SinkError=()>>) -> Self{
         Self {
             inner,
-            stream,
             state: AsyncSink::NotReady(())
         }
     }
@@ -323,7 +334,7 @@ impl Dispatch {
     }
 }
 impl Sink for Dispatch {
-    type SinkItem = Message;
+    type SinkItem = SendMessage;
     type SinkError = ();
 
     fn start_send(&mut self, item: Self::SinkItem) -> StartSend<Self::SinkItem, Self::SinkError> {
@@ -343,11 +354,108 @@ impl Sink for Dispatch {
         Ok(Async::Ready(()))
     }
 }
-impl Stream for Dispatch {
+
+struct Select {
+    stream: Box<Stream<Item=Element, Error=()>>,
+}
+impl Select {
+    pub fn new(stream: Box<Stream<Item=Element, Error=()>>) -> Self {
+        Self {
+            stream,
+        }
+    }
+}
+impl Stream for Select {
     type Item = Element;
     type Error = ();
 
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
         self.stream.poll()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SendMessage {
+    pub from: Option<Jid>,
+    pub to: Option<Jid>,
+    pub id: Option<String>,
+    pub mtype: MessageType,
+    pub body: Option<Body>,
+    pub subject: Option<Subject>,
+    pub thread: Option<Thread>,
+    pub delay: Option<Delay>,
+}
+impl SendMessage {
+    fn get_best<T>(map: &mut BTreeMap<String, T>, pref_langs: Vec<&str>) -> Option<T> {
+        if map.is_empty() {
+            return None;
+        }
+
+        for lang in pref_langs {
+            if let Some(v) = map.remove(lang) {
+                return Some(v);
+            }
+        }
+        if let Some(v) = map.remove("") {
+            return Some(v);
+        }
+
+        let k = map.keys().next().unwrap().clone();
+        map.remove(&k)
+    }
+
+    fn get_best_body(m: &mut Message, pref_langs: Vec<&str>) -> Option<Body> {
+        SendMessage::get_best::<Body>(&mut m.bodies, pref_langs)
+    }
+    fn get_best_subject(m: &mut Message, pref_langs: Vec<&str>) -> Option<Subject> {
+        SendMessage::get_best::<Subject>(&mut m.subjects, pref_langs)
+    }
+
+    fn get_delay(m: &mut Message) -> Option<Delay> {
+        while let Some(p) = m.payloads.pop() {
+            if let Ok(d) = Delay::try_from(p) {
+                return Some(d);
+            }
+        }
+        return None;
+    }
+}
+impl From<Message> for SendMessage {
+    fn from(mut t: Message) -> SendMessage {
+        let body = SendMessage::get_best_body(&mut t, vec!["en"]);
+        let subject = SendMessage::get_best_subject(&mut t, vec!["en"]);
+        let delay = SendMessage::get_delay(&mut t);
+
+        SendMessage {
+            from: t.from,
+            to: t.to,
+            id: t.id,
+            mtype: t.type_,
+            body, 
+            subject,
+            thread: t.thread,
+            delay,
+        }
+    }
+}
+impl Into<Message> for SendMessage {
+    fn into(self) -> Message {
+        let mut bodies = BTreeMap::new();
+        if let Some(b) = self.body { bodies.insert("en".into(), b); }
+        let mut subjects = BTreeMap::new();
+        if let Some(s) = self.subject { subjects.insert("en".into(), s); }
+        let mut payloads = Vec::new();
+        if let Some(d) = self.delay { payloads.push(d.into()); }
+
+        Message {
+            from: self.from,
+            to: self.to,
+            id: self.id,
+            type_: self.mtype,
+            bodies,
+            subjects,
+            thread: self.thread,
+            payloads,
+        }
     }
 }

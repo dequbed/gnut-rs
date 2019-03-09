@@ -1,4 +1,4 @@
-use futures::{Sink, Stream, Poll, Async, StartSend, IntoFuture, future, Future, AsyncSink};
+use futures::{Sink, Stream, Poll, Async, StartSend, IntoFuture, future, Future, AsyncSink, task};
 use futures::sync::mpsc::{Sender, Receiver, channel};
 use futures::future::{FutureResult, Either};
 use tokio_xmpp::Event;
@@ -7,53 +7,64 @@ use xmpp_parsers::message::{Body, Message, MessageType};
 use xmpp_parsers::delay::Delay;
 use tokio::runtime::current_thread::TaskExecutor;
 
-use random::{self, Source};
+use crate::pipes::SendMessage;
+
 use std::usize;
+use std::collections::VecDeque;
+
+use crate::plugins::{Quotes, Snack};
 
 pub struct CommandModule {
-    e: TaskExecutor,
-    tx: Sender<(Jid, String)>,
-    rx: Receiver<(Jid, String)>,
+    futures: VecDeque<Box<Future<Item = Option<SendMessage>, Error = ()>>>,
+    notify: Option<task::Task>,
 
     q: Quotes,
+    s: Snack,
 }
 
 impl CommandModule {
-    pub fn new(e: TaskExecutor) -> Self {
-        let (tx, rx) = channel(5);
+    pub fn new() -> Self {
         Self {
-            e,
-            tx,
-            rx,
-            q: Quotes::new(vec!["Test".into()])
+            futures: VecDeque::new(),
+            notify: None,
+            q: Quotes::new(vec!["Test".into()]),
+            s: Snack::new(),
         }
     }
+
 }
 
 impl Sink for CommandModule {
-    type SinkItem = Message;
+    type SinkItem = SendMessage;
     type SinkError = ();
 
     fn start_send(&mut self, message: Self::SinkItem) -> StartSend<Self::SinkItem, Self::SinkError> {
-        for p in message.payloads.iter() {
-            if let Ok(_) = Delay::try_from(p.clone()) {
-                return Ok(AsyncSink::Ready);
-            }
+        if let Some(_) = message.delay {
+            return Ok(AsyncSink::Ready);
         }
 
-        println!("Received {:?}", message);
+        let mm = message.clone();
+        let f = self.q.call(message.clone()).into_future().map(|o| o.map(|m| cleanup(mm, m)));
+        self.futures.push_back(Box::new(f));
 
-        if self.q.filter(&message) {
-            println!("calling");
-            let f = self.q.call(message, self.tx.clone()).into_future();
-            self.e.spawn_local(Box::new(f)).unwrap();
+        let mm = message.clone();
+        let g = self.s.call(message.clone()).into_future().map(|o| o.map(|m| cleanup(mm, m)));
+        self.futures.push_back(Box::new(g));
+
+        if let Some(t) = self.notify.take() {
+            t.notify();
         }
 
         Ok(AsyncSink::Ready)
     }
 
     fn poll_complete(&mut self) -> Poll<(), Self::SinkError> {
-        Ok(Async::Ready(()))
+        println!("PollCompleting");
+        if self.futures.len() == 0 {
+            Ok(Async::Ready(()))
+        } else {
+            Ok(Async::NotReady)
+        }
     }
 }
 impl Stream for CommandModule {
@@ -61,87 +72,44 @@ impl Stream for CommandModule {
     type Error = ();
 
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
-        if let Some((j,m)) = try_ready!(self.rx.poll()) {
-            let mut type_ = MessageType::Chat;
-            if is_groupchat(&j) {
-                type_ = MessageType::Groupchat;
-            }
-            let mut message = Message::new(Some(j));
-            message.type_ = type_;
-            if message.type_ == MessageType::Groupchat {
-                message.to = Some(Jid::into_bare_jid(message.to.unwrap()));
-            }
-            message.bodies.insert(String::new(), Body(m));
-            Ok(Async::Ready(Some(message.into())))
-        } else {
-            Ok(Async::NotReady)
-        }
-    }
-}
-
-fn is_groupchat(j: &Jid) -> bool {
-    j.domain == "chat.paranoidlabs.org" && j.node.is_some()
-}
-
-struct Quotes {
-    quotes: Vec<String>,
-    random: random::Default,
-}
-impl Quotes {
-    pub fn new(q: Vec<String>) -> Self{
-        Self {
-            quotes: q,
-            random: random::Default::new(),
-        }
-    }
-
-    fn filter(&mut self, message: &Message) -> bool {
-        if let (Some(ref _from), Some(ref body)) = (&message.from, message.bodies.get("")) {
-            if body.0.starts_with("^quote") {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    fn call(&mut self, message: Message, tx: Sender<(Jid, String)>) -> impl Future<Item = (), Error = ()> {
-        match (message.from, message.bodies.get("")) {
-            (Some(ref from), Some(ref body)) => {
-                let mut args = body.0.split_whitespace();
-                let out;
-                if let Some(a) = args.nth(1) { 
-                    if a == "add" {
-                        let mut q = String::new();
-                        for a in args {
-                            q.push_str(a);
-                            q.push_str(" ");
-                        }
-
-                        if q.trim().is_empty() {
-                            out = format!("Invalid quote");
-                        } else {
-                            self.quotes.push(q);
-                            out = format!("Added new quote #{}", self.quotes.len()-1);
-                        }
-                    } else if let Ok(idx) = usize::from_str_radix(a, 10) {
-                        if idx >= self.quotes.len() {
-                            out = format!("Invalid quote #{}", idx)
-                        } else {
-                            out = self.quotes[idx].clone();
-                        }
-                    } else {
-                        out = format!("Usage: ^quote <index>|add quote")
-                    }
-                } else {
-                    // Random
-                    let idx = self.random.read_u64() as usize;
-                    let clamped = idx % self.quotes.len();
-                    out = self.quotes[clamped as usize].clone();
+        self.notify = Some(task::current());
+        while let Some(mut f) = self.futures.pop_front() {
+            println!("Polling2");
+            match f.poll()? {
+                Async::Ready(Some(m)) => {
+                    let xm: Message = m.into();
+                    return Ok(Async::Ready(Some(xm.into())));
                 }
-                return Either::A(tx.send((from.clone(), out)).map(|_| {}).map_err(|_| {}))
-            },
-            _ => return Either::B(future::ok(()))
+                Async::Ready(None) => {},
+                Async::NotReady => self.futures.push_back(f),
+            }
         }
+
+        return Ok(Async::NotReady);
+    }
+}
+
+fn cleanup(original: SendMessage, mut m: SendMessage) -> SendMessage {
+    if original.mtype == MessageType::Groupchat {
+        m.mtype = MessageType::Groupchat;
+        m.to = original.from.map(|j| j.into_bare_jid());
+    } else {
+        m.to = original.from;
+        m.from = None;
+    }
+
+    m
+}
+
+pub fn make_reply(msg: &SendMessage, body: String) -> SendMessage {
+    SendMessage {
+        from: None,
+        to: None,
+        id: msg.id.clone(),
+        mtype: msg.mtype.clone(),
+        body: Some(Body(body)),
+        subject: msg.subject.clone(),
+        thread: msg.thread.clone(),
+        delay: None,
     }
 }
