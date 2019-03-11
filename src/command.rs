@@ -1,21 +1,8 @@
-use futures::{Sink, Stream, Poll, Async, StartSend, IntoFuture, Future, AsyncSink, task};
+use futures::{Sink, Stream, Poll, Async, StartSend, Future, AsyncSink, task};
 use xmpp_parsers::Element;
-use xmpp_parsers::message::{Body, Message, MessageType};
+use xmpp_parsers::message::{Body, MessageType};
 
 use crate::pipes::SendMessage;
-
-use std::collections::VecDeque;
-
-use crate::plugins::{Quotes, Snack, CommandM};
-
-pub struct CommandModule {
-    futures: VecDeque<Box<Future<Item = Option<SendMessage>, Error = ()>>>,
-    notify: Option<task::Task>,
-
-    q: Quotes,
-    s: Snack,
-    c: CommandM,
-}
 
 fn cleanup(original: SendMessage, mut m: SendMessage) -> SendMessage {
     if original.mtype == MessageType::Groupchat {
@@ -182,6 +169,7 @@ impl Sink for CombinatorModule {
     fn start_send(&mut self, m: Self::SinkItem) -> StartSend<Self::SinkItem, Self::SinkError> {
         println!("C {:?}", m);
         // We have absolutely no reason to keep delay messages at the moment
+        // FIXME: Figure out a way to handle delayed messages sensibly
         if m.delay.is_some() {
             return Ok(AsyncSink::Ready);
         }
