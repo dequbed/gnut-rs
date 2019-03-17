@@ -2,7 +2,7 @@ use futures::{Sink, Stream, Poll, Async, StartSend, Future, AsyncSink, task};
 use xmpp_parsers::Element;
 use xmpp_parsers::message::{Body, MessageType};
 
-use crate::pipes::SendMessage;
+use crate::sendable::SendMessage;
 
 fn cleanup(original: SendMessage, mut m: SendMessage) -> SendMessage {
     if original.mtype == MessageType::Groupchat {

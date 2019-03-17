@@ -2,7 +2,7 @@ use futures::{future, Future};
 
 use random::{self, Source};
 
-use crate::pipes::SendMessage;
+use crate::sendable::SendMessage;
 use crate::command::make_reply;
 use crate::command::FutureMessagePlugin;
 

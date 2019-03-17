@@ -14,12 +14,15 @@ mod command;
 use command::{CombinatorModule, StreamPlugin, FuturePlugin, Combinator};
 
 mod pipes;
-use pipes::{Pipes, ChannelHandler, SendMessage};
+use pipes::{Pipes, ChannelHandler};
 
 mod plugins;
 use plugins::{Quotes, CommandM, Join, Snack};
 
 mod into_stream;
+
+mod sendable;
+use sendable::SendMessage;
 
 struct ExamplePlugin;
 impl StreamPlugin for ExamplePlugin {

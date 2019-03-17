@@ -3,7 +3,7 @@ use futures::{future, Future};
 use xmpp_parsers::{Jid, Element};
 use xmpp_parsers::presence::{Presence, Show as PresenceShow, Type as PresenceType};
 
-use crate::pipes::SendMessage;
+use crate::sendable::SendMessage;
 use crate::command::make_reply;
 use crate::command::FuturePlugin;
 
