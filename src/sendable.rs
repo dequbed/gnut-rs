@@ -1,8 +1,15 @@
 use xmpp_parsers::{Jid, Element, TryFrom};
 use xmpp_parsers::message::{Message, MessageType, Body, Subject, Thread};
 use xmpp_parsers::delay::Delay;
+use xmpp_parsers::presence::{Presence, Type as PresenceType, Show as PresenceShow};
+use xmpp_parsers::muc::Muc;
 
 use std::collections::BTreeMap;
+
+pub enum Sendable {
+    Message(SendMessage),
+    Presence(SendPresence),
+}
 
 #[derive(Debug, Clone)]
 pub struct SendMessage {
@@ -93,5 +100,68 @@ impl Into<Element> for SendMessage {
     fn into(self) -> Element {
         let m: Message = self.into();
         m.into()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SendPresence {
+    pub from: Option<Jid>,
+    pub to: Option<Jid>,
+    pub id: Option<String>,
+    pub ptype: PresenceType,
+    pub show: PresenceShow,
+    pub statuses: BTreeMap<String, String>,
+    pub priority: i8,
+    pub delay: Option<Delay>,
+    pub muc: Option<Muc>
+}
+impl From<Presence> for SendPresence {
+    fn from(mut p: Presence) -> SendPresence {
+        let mut delay = None;
+        let mut muc = None;
+
+        while let Some(p) = p.payloads.pop() {
+            if let Ok(d) = Delay::try_from(p.clone()) {
+                delay = Some(d);
+            } else if let Ok(m) = Muc::try_from(p) {
+                muc = Some(m);
+            }
+        }
+
+        SendPresence {
+            from: p.from,
+            to: p.to,
+            id: p.id,
+            ptype: p.type_,
+            show: p.show,
+            statuses: p.statuses,
+            priority: p.priority,
+            delay,
+            muc,
+        }
+    }
+}
+impl Into<Presence> for SendPresence {
+    fn into(self) -> Presence {
+        let mut payloads = Vec::new();
+        if let Some(d) = self.delay { payloads.push(d.into()) }
+        if let Some(m) = self.muc { payloads.push(m.into()) }
+
+        Presence {
+            from: self.from,
+            to: self.to,
+            id: self.id,
+            type_: self.ptype,
+            show: self.show,
+            statuses: self.statuses,
+            priority: self.priority,
+            payloads,
+        }
+    }
+}
+impl Into<Element> for SendPresence {
+    fn into(self) -> Element {
+        let p: Presence = self.into();
+        p.into()
     }
 }
